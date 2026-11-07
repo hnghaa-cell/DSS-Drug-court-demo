@@ -196,21 +196,27 @@ def fit_eval(cols, n=200):
     del m; gc.collect()
     return r
 
+# Khi chạy notebook/script (__main__) thì tính hết ngay; khi app web import core.py thì các phân tích nặng
+# chỉ tính khi được gọi (hàm compute_*), hoặc đọc từ precomputed.json.
+EAGER = __name__ == "__main__"
+
 # --- Table 5: ba mô hình ---
-gbt = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.05, random_state=SEED).fit(Xu, yu)
-mlp = make_pipeline(StandardScaler(), MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=300,
-                                                    early_stopping=True, random_state=SEED)).fit(Xu, yu)
-res_t5 = pd.DataFrame({
-    "Random Forest (RF)": metrics(y_test, p_test_raw),
-    "Gradient Boosted Trees (GBT)": metrics(y_test, gbt.predict_proba(X_test)[:, 1]),
-    "MLP-ANN": metrics(y_test, mlp.predict_proba(X_test)[:, 1]),
-}).T.drop(columns="Brier")
+def compute_t5():
+    gbt = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.05, random_state=SEED).fit(Xu, yu)
+    mlp = make_pipeline(StandardScaler(), MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=300,
+                                                        early_stopping=True, random_state=SEED)).fit(Xu, yu)
+    return pd.DataFrame({
+        "Random Forest (RF)": metrics(y_test, p_test_raw),
+        "Gradient Boosted Trees (GBT)": metrics(y_test, gbt.predict_proba(X_test)[:, 1]),
+        "MLP-ANN": metrics(y_test, mlp.predict_proba(X_test)[:, 1]),
+    }).T.drop(columns="Brier")
 PAPER_T5 = pd.DataFrame({
     "Random Forest (RF)": {"Accuracy": 0.857, "Recall": 0.869, "Precision": 0.656, "F1": 0.7476, "AUC": 0.928},
     "Gradient Boosted Trees (GBT)": {"Accuracy": 0.850, "Recall": 0.861, "Precision": 0.644, "F1": 0.7369, "AUC": 0.926},
     "MLP-ANN": {"Accuracy": 0.853, "Recall": 0.848, "Precision": 0.672, "F1": 0.7497, "AUC": 0.917},
 }).T
-print("Table 5 (demo, NIJ):\n", res_t5)
+if EAGER:
+    res_t5 = compute_t5(); print("Table 5 (demo, NIJ):\n", res_t5)
 
 # --- Table 6: ablation theo nhóm nguồn dữ liệu (ánh xạ biến NIJ sang 5 nhóm của bài báo) ---
 def category_of(c):
@@ -222,16 +228,18 @@ def category_of(c):
     return "Chỉ số chương trình"
 CATEGORY = {c: category_of(c) for c in FEATS}
 CATS = ["Nhân khẩu học", "Kinh tế – xã hội", "Tiền án", "Chỉ số chương trình", "Hành vi"]
-t6 = {"Tất cả biến": metrics(y_test, p_test_raw)}
-for cat in CATS:
-    t6[f"Bỏ nhóm {cat}"] = fit_eval([c for c in FEATS if CATEGORY[c] != cat], n=200)
-res_t6 = pd.DataFrame(t6).T[["Accuracy", "Recall", "F1", "AUC"]]
+def compute_t6():
+    t6 = {"Tất cả biến": metrics(y_test, p_test_raw)}
+    for cat in CATS:
+        t6[f"Bỏ nhóm {cat}"] = fit_eval([c for c in FEATS if CATEGORY[c] != cat], n=150)
+    return pd.DataFrame(t6).T[["Accuracy", "Recall", "F1", "AUC"]]
 PAPER_T6 = pd.DataFrame({
     "Tất cả biến": [0.857, 0.869, 0.748, 0.928], "Bỏ nhóm Nhân khẩu học": [0.828, 0.826, 0.710, 0.905],
     "Bỏ nhóm Kinh tế – xã hội": [0.827, 0.833, 0.711, 0.910], "Bỏ nhóm Tiền án": [0.820, 0.836, 0.703, 0.911],
     "Bỏ nhóm Chỉ số chương trình": [0.723, 0.743, 0.597, 0.794], "Bỏ nhóm Hành vi": [0.829, 0.813, 0.717, 0.913],
 }, index=["Accuracy", "Recall", "F1", "AUC"]).T
-print("Table 6 (demo, NIJ):\n", res_t6)
+if EAGER:
+    res_t6 = compute_t6(); print("Table 6 (demo, NIJ):\n", res_t6)
 
 # --- Table 7–8: công bằng theo cách của bài báo, có p-value ---
 def _ptest(k1, n1, k2, n2):
@@ -254,11 +262,13 @@ def paper_fairness_table(yt, p, groups, thr=0.5):
 print(paper_fairness_table(y_test, p_test_raw, meta_test["race"]))
 
 # --- Fig. 4: biến quan trọng toàn cục (làm nhiễu từng biến, đo mức giảm AUC) ---
-_sub = X_test.sample(min(1500, len(X_test)), random_state=SEED)
-_pi = permutation_importance(rf, _sub, y_test.loc[_sub.index], scoring="roc_auc",
-                             n_repeats=3, random_state=SEED, n_jobs=1)   # 1 tiến trình: tránh nhân bản mô hình -> hết RAM
-PERM_IMP = pd.Series(_pi.importances_mean, index=FEATS).sort_values(ascending=False)
-del _pi, _sub; gc.collect()
+def compute_perm_imp():
+    sub = X_test.sample(min(1500, len(X_test)), random_state=SEED)
+    pi = permutation_importance(rf, sub, y_test.loc[sub.index], scoring="roc_auc",
+                                n_repeats=3, random_state=SEED, n_jobs=1)   # 1 tiến trình: tránh nhân bản mô hình -> hết RAM
+    return pd.Series(pi.importances_mean, index=FEATS).sort_values(ascending=False)
+if EAGER:
+    PERM_IMP = compute_perm_imp()
 
 # --- Module khuyến nghị: mô phỏng đầu ra GenAI của bài báo bằng thư viện can thiệp ---
 INTERVENTIONS = [
@@ -341,9 +351,11 @@ def shap_pos(Xd):
     if sv.ndim == 3: sv = sv[:, :, 1]
     return sv
 
-sv_glob = shap_pos(X_test.iloc[:200])
-GLOBAL_IMP = pd.Series(np.abs(sv_glob).mean(0), index=FEATS).sort_values(ascending=False)
-GLOBAL_IMP.head(10).rename(index=vn)
+def compute_global_imp():
+    return pd.Series(np.abs(shap_pos(X_test.iloc[:200])).mean(0), index=FEATS).sort_values(ascending=False)
+if EAGER:
+    GLOBAL_IMP = compute_global_imp()
+    print(GLOBAL_IMP.head(10).rename(index=vn))
 
 ACTIONABLE = {   # +1: chỉ được tăng, -1: chỉ được giảm
     "percent_days_employed": +1, "jobs_per_year": +1, "program_attendances": +1,
@@ -464,12 +476,14 @@ def eod(gm):
 for a in ["race", "gender", "age_group"]:
     print(f"Equalized-odds difference theo {a}: {eod(group_metrics(y_test, p_test_raw, meta_test[a])):.3f}")
 
-res_g5 = pd.DataFrame({
-    "Tất cả biến (như bài báo)": metrics(y_test, p_test_raw),
-    "Chỉ biến lúc tiếp nhận (dùng được khi ra quyết định đầu vào)": fit_eval(ADMISSION),
-    "Chỉ biến trong chương trình": fit_eval(IN_PROG),
-}).T.drop(columns="Brier")
-print(res_g5)
+def compute_g5():
+    return pd.DataFrame({
+        "Tất cả biến (như bài báo)": metrics(y_test, p_test_raw),
+        "Chỉ biến lúc tiếp nhận (dùng được khi ra quyết định đầu vào)": fit_eval(ADMISSION),
+        "Chỉ biến trong chương trình": fit_eval(IN_PROG),
+    }).T.drop(columns="Brier")
+if EAGER:
+    res_g5 = compute_g5(); print(res_g5)
 
 def cv_scores(Xd, yd, k=5):
     skf = StratifiedKFold(k, shuffle=True, random_state=SEED); out = []
@@ -480,10 +494,12 @@ def cv_scores(Xd, yd, k=5):
     d = pd.DataFrame(out).drop(columns="Brier")
     return d.mean(), d.std()
 
-cv_mean, cv_std = cv_scores(X, y)
-res_cv = pd.DataFrame({"Trung bình": cv_mean, "Độ lệch chuẩn": cv_std,
-                       "KTC 95% (±)": 1.96 * cv_std / np.sqrt(5)}).T
-print("\n5-fold CV trên NIJ:\n", res_cv)
+def compute_cv():
+    cv_mean, cv_std = cv_scores(X, y)
+    return pd.DataFrame({"Trung bình": cv_mean, "Độ lệch chuẩn": cv_std,
+                         "KTC 95% (±)": 1.96 * cv_std / np.sqrt(5)}).T
+if EAGER:
+    res_cv = compute_cv(); print("\n5-fold CV trên NIJ:\n", res_cv)
 
 def prep_compas(raw):
     d = raw[(raw.days_b_screening_arrest <= 30) & (raw.days_b_screening_arrest >= -30) &
@@ -503,12 +519,39 @@ def run_pipeline(Xd, yd, md, name):
     r["EOD theo chủng tộc"] = eod(group_metrics(yte, p, mte["race"]))
     return r
 
-rows_g6 = [{"Bộ dữ liệu": "Bài báo — Oklahoma drug courts (Tbl 5)", "N": 35711, "Tỉ lệ tái phạm": 0.24,
-            "Accuracy": 0.857, "Recall": 0.869, "Precision": 0.656, "F1": 0.7476, "AUC": 0.928}]
-rows_g6.append(run_pipeline(X, y, meta, "NIJ — Georgia, tái phạm 3 năm"))
-if compas_raw is not None:
-    Xc, yc, mc = prep_compas(compas_raw)
-    rows_g6.append(run_pipeline(Xc, yc, mc, "COMPAS — Broward FL, tái phạm 2 năm"))
-res_g6 = pd.DataFrame(rows_g6).drop(columns="Brier", errors="ignore")
-res_g6
+def compute_g6():
+    rows = [{"Bộ dữ liệu": "Bài báo — Oklahoma drug courts (Tbl 5)", "N": 35711, "Tỉ lệ tái phạm": 0.24,
+             "Accuracy": 0.857, "Recall": 0.869, "Precision": 0.656, "F1": 0.7476, "AUC": 0.928}]
+    rows.append(run_pipeline(X, y, meta, "NIJ — Georgia, tái phạm 3 năm"))
+    if compas_raw is not None:
+        Xc, yc, mc = prep_compas(compas_raw)
+        rows.append(run_pipeline(Xc, yc, mc, "COMPAS — Broward FL, tái phạm 2 năm"))
+    return pd.DataFrame(rows).drop(columns="Brier", errors="ignore")
+if EAGER:
+    res_g6 = compute_g6(); print(res_g6)
+
+from io import StringIO
+RESULT_NAMES = ["t5", "t6", "perm_imp", "global_imp", "g5", "cv", "g6"]
+
+def export_results(path="precomputed.json"):
+    objs = {"t5": res_t5, "t6": res_t6, "perm_imp": PERM_IMP.to_frame("v"), "global_imp": GLOBAL_IMP.to_frame("v"),
+            "g5": res_g5, "cv": res_cv, "g6": res_g6}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({k: v.to_json(orient="split", force_ascii=False) for k, v in objs.items()}, f, ensure_ascii=False)
+    return path
+
+def load_results(path):
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    out = {k: pd.read_json(StringIO(v), orient="split") for k, v in raw.items()}
+    for k in ("perm_imp", "global_imp"):
+        if k in out: out[k] = out[k]["v"]
+    return out
+
+if EAGER:
+    export_results()
+    print("Đã lưu precomputed.json")
+    if IN_COLAB:
+        from google.colab import files
+        files.download("precomputed.json")
 

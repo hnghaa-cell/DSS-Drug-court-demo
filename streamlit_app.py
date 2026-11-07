@@ -10,13 +10,33 @@ import streamlit as st
 st.set_page_config(page_title="Demo DSS tái phạm", page_icon="⚖️", layout="wide")
 
 
-@st.cache_resource(show_spinner="Đang tải dữ liệu và huấn luyện các mô hình… (lần đầu mất khoảng 3–5 phút)")
+from pathlib import Path
+
+
+@st.cache_resource(show_spinner="Đang tải dữ liệu và huấn luyện mô hình chính… (lần đầu khoảng 1–2 phút)")
 def load_core():
-    import core          # chạy toàn bộ pipeline một lần cho mỗi tiến trình server
+    import core          # chỉ tải dữ liệu + huấn luyện RF chính; phân tích nặng tính khi cần
     return core
 
 
 C = load_core()
+
+
+@st.cache_resource(show_spinner=False)
+def precomputed():
+    p = Path(__file__).with_name("precomputed.json")
+    return C.load_results(p) if p.exists() else {}
+
+
+@st.cache_resource(show_spinner="Đang tính kết quả cho trang này… (chỉ lần đầu; có thể mất vài phút)")
+def _compute(name):
+    return getattr(C, "compute_" + name)()
+
+
+def R(name):
+    """Lấy kết quả phân tích: ưu tiên precomputed.json, nếu không có thì tính một lần rồi giữ trong bộ nhớ."""
+    pre = precomputed()
+    return pre[name] if name in pre else _compute(name)
 RED, BLUE, GREY, PURPLE = "#d62728", "#1f77b4", "#7f7f7f", "#6c5ce7"
 TEST_IDS = list(C.X_test.index[:300])
 WHATIF = [f for f in ["percent_days_employed", "jobs_per_year", "program_unexcusedabsences",
@@ -86,10 +106,12 @@ if mode.startswith("📄"):
     st.title("📄 Bản gốc — tái hiện DSS theo bài báo")
     st.caption("Pipeline của bài báo: Random Forest (+ undersampling) → điểm rủi ro → SHAP → khuyến nghị can thiệp. "
                "Module GenAI (OpenAI o1-preview) được mô phỏng bằng thư viện can thiệp ánh xạ từ các yếu tố có SHAP cao nhất.")
-    o1, o2, o3, o4, o5, o6 = st.tabs(["Dashboard DSS", "Hiệu năng mô hình (Table 5)", "Tích hợp đa nguồn (Table 6)",
-                                      "Công bằng (Table 7–8)", "Biến quan trọng (Fig. 4)", "Đánh giá người dùng"])
+    page = st.radio("Trang", ["Dashboard DSS", "Hiệu năng mô hình (Table 5)", "Tích hợp đa nguồn (Table 6)",
+                              "Công bằng (Table 7–8)", "Biến quan trọng (Fig. 4)", "Đánh giá người dùng"],
+                    horizontal=True, label_visibility="collapsed")
+    st.divider()
 
-    with o1:
+    if page == "Dashboard DSS":
         i = st.selectbox("Nhập / chọn mã người tham gia", TEST_IDS, format_func=label_of, key="pid_o")
         p_raw, contribs = explain(i)
         row = C.X_test.loc[i]
@@ -111,43 +133,45 @@ if mode.startswith("📄"):
         st.caption("Bài báo gửi giá trị biến + điểm SHAP + từ điển dữ liệu cho LLM và yêu cầu tối đa 3 can thiệp. "
                    "Demo dùng cùng logic (các yếu tố có SHAP dương lớn nhất, kèm giá trị thực) nhưng sinh nội dung từ thư viện can thiệp cố định.")
 
-    with o2:
+    elif page == "Hiệu năng mô hình (Table 5)":
+        t5 = R("t5")
         st.markdown("So sánh ba thuật toán của bài báo, cùng huấn luyện trên dữ liệu đã undersampling, ngưỡng 0.5.")
-        side_by_side(C.res_t5, C.PAPER_T5)
-        fig, ax = plt.subplots(figsize=(8, 3.4)); w = 0.25; xs = np.arange(len(C.res_t5.columns))
-        for k, (name, r) in enumerate(C.res_t5.iterrows()):
+        side_by_side(t5, C.PAPER_T5)
+        fig, ax = plt.subplots(figsize=(8, 3.4)); w = 0.25; xs = np.arange(len(t5.columns))
+        for k, (name, r) in enumerate(t5.iterrows()):
             ax.bar(xs + (k - 1) * w, r.values, w, label=name)
-        ax.set_xticks(xs); ax.set_xticklabels(C.res_t5.columns); ax.set_ylim(0, 1); ax.legend(fontsize=8); clean(ax)
+        ax.set_xticks(xs); ax.set_xticklabels(t5.columns); ax.set_ylim(0, 1); ax.legend(fontsize=8); clean(ax)
         fig.tight_layout(); st.pyplot(fig)
-        best = C.res_t5["Recall"].idxmax()
+        best = t5["Recall"].idxmax()
         st.info(f"Bài báo chọn RF vì recall cao nhất. Trên dữ liệu NIJ, mô hình có recall cao nhất là **{best}**.")
 
-    with o3:
+    elif page == "Tích hợp đa nguồn (Table 6)":
+        t6 = R("t6")
         st.markdown("Bỏ lần lượt từng nhóm nguồn dữ liệu rồi huấn luyện lại. Hiệu năng giảm càng nhiều thì nhóm đó càng quan trọng (mục tiêu O1).")
-        side_by_side(C.res_t6, C.PAPER_T6)
-        drop = (C.res_t6.loc["Tất cả biến", "AUC"] - C.res_t6["AUC"]).drop("Tất cả biến")
+        side_by_side(t6, C.PAPER_T6)
+        drop = (t6.loc["Tất cả biến", "AUC"] - t6["AUC"]).drop("Tất cả biến")
         fig, ax = plt.subplots(figsize=(7, 3)); ax.barh(drop.index[::-1], drop.values[::-1], color=PURPLE)
         ax.set_xlabel("Mức giảm AUC khi bỏ nhóm"); clean(ax); fig.tight_layout(); st.pyplot(fig)
         with st.expander("Cách ánh xạ biến NIJ vào 5 nhóm của bài báo"):
             st.dataframe(pd.DataFrame({"Biến": [C.vn(f) for f in C.FEATS], "Nhóm": [C.CATEGORY[f] for f in C.FEATS]}),
                          use_container_width=True, hide_index=True)
 
-    with o4:
+    elif page == "Công bằng (Table 7–8)":
         st.markdown("Đúng cách của bài báo: so **tỉ trọng mỗi nhóm chủng tộc trong số ca FN/FP** với tỉ trọng của nhóm đó "
                     "trong tập test (kiểm định hai tỉ lệ, mức ý nghĩa 5%). p-value < 0.05 nghĩa là có chênh lệch.")
         ft = C.paper_fairness_table(C.y_test, C.p_test_raw, C.meta_test["race"])
         st.dataframe(ft.round(3), use_container_width=True, hide_index=True)
         st.caption("Bài báo: không có khác biệt ý nghĩa ở FN; với FP, nhóm 'Other' p = 0.045 và 'Unknown' (n = 5) p < 0.001.")
 
-    with o5:
+    elif page == "Biến quan trọng (Fig. 4)":
         st.markdown("Biến quan trọng toàn cục: làm nhiễu từng biến và đo mức giảm AUC (tương tự phân tích độ nhạy của bài báo).")
-        imp = C.PERM_IMP.head(10)[::-1]
+        imp = R("perm_imp").head(10)[::-1]
         fig, ax = plt.subplots(figsize=(8, 4)); ax.barh([C.vn(f) for f in imp.index], imp.values, color=PURPLE)
         ax.set_xlabel("Mức giảm AUC"); clean(ax); fig.tight_layout(); st.pyplot(fig)
         st.caption("Bài báo (Fig. 4): top biến gồm số năm tù nếu thất bại, số lần chế tài, số lần khen thưởng, tuổi lúc bị bắt, "
                    "số lần bị bắt trước đó, thu nhập từ việc làm, thời gian chờ, quyền nuôi con.")
 
-    with o6:
+    else:
         st.markdown("Kết quả khảo sát 42 chuyên gia **do bài báo báo cáo** (Table 9–11). Phần này không tái hiện được bằng dữ liệu công khai.")
         survey = pd.DataFrame({
             "Chiều đánh giá": ["Relevance", "Actionability", "Interpretability", "Fairness", "Transparency", "Trustworthiness", "Usability"],
@@ -166,10 +190,12 @@ if mode.startswith("📄"):
 # ================= BẢN CẢI TIẾN =================
 else:
     st.title("🚀 Bản cải tiến — khắc phục các gap của bài báo")
-    e1, e2, e3, e4, e5 = st.tabs(["G1·G2·G3 – Hồ sơ nâng cao", "G1 – What-if", "G3 – Độ bất định",
-                                  "G4 – Công bằng chuẩn", "G5·G6 – Rò rỉ & khái quát hoá"])
+    page = st.radio("Trang", ["G1·G2·G3 – Hồ sơ nâng cao", "G1 – What-if", "G3 – Độ bất định",
+                              "G4 – Công bằng chuẩn", "G5·G6 – Rò rỉ & khái quát hoá"],
+                    horizontal=True, label_visibility="collapsed")
+    st.divider()
 
-    with e1:
+    if page.startswith("G1·G2"):
         a, b = st.columns([3, 2])
         i = a.selectbox("Chọn hồ sơ (tập test)", TEST_IDS, format_func=label_of, key="pid_e")
         alpha = b.slider("α conformal (1 − độ tin cậy)", 0.05, 0.30, float(C.ALPHA), 0.05, key="alpha_e")
@@ -208,7 +234,7 @@ else:
         else:
             st.write("Không cần, hoặc không tìm được thay đổi khả thi trên các biến can thiệp được.")
 
-    with e2:
+    elif page == "G1 – What-if":
         st.markdown("Kéo thanh trượt các biến **có thể can thiệp** để xem rủi ro (đã hiệu chỉnh) thay đổi thế nào.")
         j = st.selectbox("Chọn hồ sơ", TEST_IDS, format_func=label_of, key="pid_wi")
         base = C.X_test.loc[j]; new = base.copy(); cols = st.columns(2)
@@ -221,7 +247,7 @@ else:
         c1.metric("Rủi ro ban đầu", f"{p0:.0%}")
         c2.metric("Rủi ro sau thay đổi", f"{p1:.0%}", f"{(p1 - p0) * 100:+.1f} điểm %", delta_color="inverse")
 
-    with e3:
+    elif page == "G3 – Độ bất định":
         al = st.slider("α conformal", 0.05, 0.30, float(C.ALPHA), 0.05, key="alpha4")
         q, cover, amb = C.conformal_report(al)
         c1, c2, c3 = st.columns(3)
@@ -241,7 +267,7 @@ else:
         ax.set_xlabel("Xác suất dự đoán"); ax.set_ylabel("Tỉ lệ tái phạm thực tế"); ax.legend(); clean(ax); fig.tight_layout()
         st.pyplot(fig, use_container_width=False)
 
-    with e4:
+    elif page == "G4 – Công bằng chuẩn":
         attr = st.radio("Thuộc tính nhạy cảm", list(ATTR), horizontal=True)
         g = C.meta_test[ATTR[attr]]
         gm = C.group_metrics(C.y_test, C.p_test_raw, g)
@@ -254,12 +280,12 @@ else:
         ax.set_xticks(xs); ax.set_xticklabels(gm["Nhóm"], rotation=15); ax.legend(); clean(ax); fig.tight_layout()
         st.pyplot(fig)
 
-    with e5:
+    else:
         st.subheader("G5 — Biến lúc tiếp nhận vs biến phát sinh trong chương trình")
-        st.dataframe(C.res_g5.round(3), use_container_width=True)
+        st.dataframe(R("g5").round(3), use_container_width=True)
         st.caption("Nếu hiệu năng giảm mạnh khi chỉ dùng biến lúc tiếp nhận, con số của mô hình 'tất cả biến' "
                    "không phản ánh năng lực dự đoán tại thời điểm ra quyết định đầu vào.")
         st.subheader("G6 — Cùng một pipeline trên nhiều bộ dữ liệu")
-        st.dataframe(C.res_g6.round(3), use_container_width=True, hide_index=True)
+        st.dataframe(R("g6").round(3), use_container_width=True, hide_index=True)
         st.subheader("G6 — 5-fold cross-validation trên NIJ (bài báo chỉ dùng 1 lần holdout)")
-        st.dataframe(C.res_cv.round(3), use_container_width=True)
+        st.dataframe(R("cv").round(3), use_container_width=True)
