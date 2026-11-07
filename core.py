@@ -1,6 +1,6 @@
 # core.py - sinh tự động từ demo/src/demo_dss.py bằng build_streamlit.ps1. Không sửa trực tiếp.
 
-import re, sys, json, math, warnings
+import re, sys, gc, json, math, warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -154,8 +154,8 @@ def fmt(v):
     v = float(v)
     return f"{int(v)}" if v.is_integer() else f"{v:.2f}"
 
-def make_rf(n=300):
-    return RandomForestClassifier(n_estimators=n, min_samples_leaf=3, max_depth=14,
+def make_rf(n=200):
+    return RandomForestClassifier(n_estimators=n, min_samples_leaf=5, max_depth=12,
                                   max_features="sqrt", n_jobs=-1, random_state=SEED)
 
 def undersample(Xd, yd, seed=SEED):
@@ -189,10 +189,12 @@ from sklearn.pipeline import make_pipeline
 from sklearn.inspection import permutation_importance
 from scipy.stats import norm
 
-def fit_eval(cols, n=300):
+def fit_eval(cols, n=200):
     Xa, ya = undersample(X_train[cols], y_train)
     m = make_rf(n).fit(Xa, ya)
-    return metrics(y_test, m.predict_proba(X_test[cols])[:, 1])
+    r = metrics(y_test, m.predict_proba(X_test[cols])[:, 1])
+    del m; gc.collect()
+    return r
 
 # --- Table 5: ba mô hình ---
 gbt = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.05, random_state=SEED).fit(Xu, yu)
@@ -252,10 +254,11 @@ def paper_fairness_table(yt, p, groups, thr=0.5):
 print(paper_fairness_table(y_test, p_test_raw, meta_test["race"]))
 
 # --- Fig. 4: biến quan trọng toàn cục (làm nhiễu từng biến, đo mức giảm AUC) ---
-_sub = X_test.sample(min(2000, len(X_test)), random_state=SEED)
+_sub = X_test.sample(min(1500, len(X_test)), random_state=SEED)
 _pi = permutation_importance(rf, _sub, y_test.loc[_sub.index], scoring="roc_auc",
-                             n_repeats=3, random_state=SEED, n_jobs=-1)
+                             n_repeats=3, random_state=SEED, n_jobs=1)   # 1 tiến trình: tránh nhân bản mô hình -> hết RAM
 PERM_IMP = pd.Series(_pi.importances_mean, index=FEATS).sort_values(ascending=False)
+del _pi, _sub; gc.collect()
 
 # --- Module khuyến nghị: mô phỏng đầu ra GenAI của bài báo bằng thư viện can thiệp ---
 INTERVENTIONS = [
@@ -472,7 +475,7 @@ def cv_scores(Xd, yd, k=5):
     skf = StratifiedKFold(k, shuffle=True, random_state=SEED); out = []
     for tr, te in skf.split(Xd, yd):
         Xa, ya = undersample(Xd.iloc[tr], yd.iloc[tr])
-        m = make_rf(200).fit(Xa, ya)
+        m = make_rf(150).fit(Xa, ya)
         out.append(metrics(yd.iloc[te], m.predict_proba(Xd.iloc[te])[:, 1]))
     d = pd.DataFrame(out).drop(columns="Brier")
     return d.mean(), d.std()
