@@ -46,11 +46,11 @@ compas_raw = load_csv(COMPAS_URLS, "COMPAS (ProPublica)", required=False)
 
 def to_num(s):
     """Chuyển cột sang số nếu được (Yes/No, True/False, '3 or more', số). Trả None nếu không phải cột số."""
-    if s.dtype == bool:
+    if pd.api.types.is_bool_dtype(s):
         return s.astype(int)
-    if s.dtype != object:
+    if pd.api.types.is_numeric_dtype(s):
         return s
-    x = s.astype(str).str.strip()
+    x = s.astype(object).astype(str).str.strip()     # chạy được cả với kiểu 'str' mới của pandas 3
     low = x.str.lower()
     valid = low[low != "nan"]
     BIN = {"true": 1, "yes": 1, "1": 1, "false": 0, "no": 0, "0": 0}

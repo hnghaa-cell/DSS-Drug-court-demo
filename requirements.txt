@@ -1,6 +1,6 @@
 streamlit
 scikit-learn
 shap
-pandas
+pandas>=2.1,<3
 numpy
 matplotlib
